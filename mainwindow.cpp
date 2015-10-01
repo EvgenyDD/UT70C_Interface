@@ -5,21 +5,29 @@
 #include "plot.h"
 #include <QString>
 
+#define SCAN_MS 50
 
 MainWindow::MainWindow(QWidget *parent) :
     QMainWindow(parent),
     ui(new Ui::MainWindow),
-    dataArray(0)
+    dataArray(0),
+    disconnectTimer(10)
 {
     ui->setupUi(this);
 
 /* UI Elements */
     createActions();
-    createMenus();
+    //createMenus();
     createToolBars();
     createCentralWidget();
     initMainWidgetCloseState();
     connect(controlButton, SIGNAL(triggered()), this, SLOT(openPortButtonClick()));
+    connect(refreshButton, SIGNAL(triggered()), this, SLOT(procEnumerate()));
+
+    refresh->setValue(SCAN_MS);
+    refresh->setMaximum(100000);
+    refresh->setMinimum(SCAN_MS);
+    connect(refresh, SIGNAL(valueChanged(int)), this, SLOT(refreshScanRate(int)));
 
     procEnumerate();
 
@@ -29,37 +37,18 @@ MainWindow::MainWindow(QWidget *parent) :
     connect(serial, SIGNAL(error(QSerialPort::SerialPortError)),
             this,   SLOT(serialErrorHandler(QSerialPort::SerialPortError)));
 
-    connect(sendButton, SIGNAL(clicked()), this, SLOT(serialDataSend()));
+    timer = new QTimer();
+    timer->setInterval(SCAN_MS);
+    connect(timer, SIGNAL(timeout()), this, SLOT(serialWriteData()));
+    timer->start();
 }
 
 
 MainWindow::~MainWindow()
 {
-    /*if (this->enumerator && this->enumerator->isEnabled())
-            this->enumerator->setEnabled(false);*/
-
-    /*if (this->serial && this->serial->isOpen())
-        this->serial->close();*/
-
-    delete ui;
+    if (this->serial && this->serial->isOpen())
+        this->serial->close();
 }
-
-
-void MainWindow::changeEvent(QEvent *e)
-{
-    QWidget::changeEvent(e);
-
-    switch (e->type())
-    {
-    case QEvent::LanguageChange:
-        ui->retranslateUi(this);
-        break;
-
-    default:
-        break;
-    }
-}
-
 
 
 
@@ -67,17 +56,11 @@ void MainWindow::changeEvent(QEvent *e)
 /* Private SLOTS section */
 void MainWindow::procEnumerate(/*const QStringList &l*/)
 {
-    qDebug() << "procEnumerate()";
-
-    // Fill ports box.
-    portBox->clear();
-
     QStringList list;
-
-    //QSerialPortInfo info = enumerator->availablePorts();
     foreach (const QSerialPortInfo &info, QSerialPortInfo::availablePorts())
         list.append(info.portName());
 
+    portBox->clear();
     portBox->addItems(list);
 }
 
@@ -98,7 +81,7 @@ void MainWindow::openPortButtonClick()
         {
             //SettingsDialog::Settings p = settings->settings();
             serial->setPortName(this->portBox->currentText());
-            serial->setBaudRate(QSerialPort::Baud115200);
+            serial->setBaudRate(QSerialPort::Baud9600);
             serial->setDataBits(QSerialPort::Data8);
             serial->setParity(QSerialPort::NoParity);
             serial->setStopBits(QSerialPort::OneStop);
@@ -117,134 +100,198 @@ void MainWindow::openPortButtonClick()
             {
                 qDebug() << "Port opened";
                 ui->statusBar->showMessage(tr("Port opened"));
-                /*ui->statusBar->showMessage(tr("Connected to %1 : %2, %3, %4, %5, %6")
-                                                       .arg(p.name).arg(p.stringBaudRate).arg(p.stringDataBits)
-                                                       .arg(p.stringParity).arg(p.stringStopBits).arg(p.stringFlowControl));
-                   */
             }
 
             plot->start();
         }
 
         (result) ? this->initMainWidgetOpenState() : this->initMainWidgetCloseState();
-        this->sendButton->setEnabled(result ? true : false);
+        //this->sendButton->setEnabled(result ? true : false);
     }
 }
 
-
-void MainWindow::procSerialMessages(const QString &msg, QDateTime dt)
-{
-    qDebug()<< "procSerialMessages" << " ...";
-    QString s = dt.time().toString() + " > " + msg;
-    textEdit->appendPlainText(s);
-}
 
 
 void MainWindow::serialDataReceive()
 {
-
-    /*
-     *     QByteArray temp_data = serial->readLine(); // Заполняем массив данными
-    if (temp_data.indexOf("\n") != -1) {
-        // Получили переход на новую строку - значит приняли данные
-        bytes += temp_data;
-
-        // Грязная магия - парсим данные. Делим массив на две части: до пробела (команда) и после (параметры)
-        // Затем очищаем параметры от \r\n, и преобразуем в unsigned int
-        uint adc_value = bytes.split(' ').at(1).split('\r').at(0).toUInt();
-
-        // Преобразуем данные АЦП в миливольты.
-        // А за тем uint преобразовывается в строку, которую отображаем в тестовом поле leADC
-        ui->leADC->setText(QString::number(adc_value / 1.365));
-        bytes.clear();
-    } else {
-        bytes += temp_data;
-    }
-*/
-    qDebug()<<"procSerialDataReceive"<<" receiving";
-
     if (this->serial && this->serial->isOpen())
     {
         QByteArray byte = this->serial->readAll();
-        qDebug()<<byte;
-
-        qDebug()<<"1";
-        this->printTrace(byte);
-qDebug()<<"2";
-
-        if(byte.at(0) != '\n')
+        if(byte.at(0) == '\x0A')
         {
-            dataArray.append(byte);
-            qDebug()<<"3";
-
-            double elapsed = (plot->dclock_elapsed())/ 1000.0;
-            QPointF point(elapsed, 9);
-            plot->appendPoint(point);
-            QPointF point2(elapsed, 15);
-            plot->appendPoint(point2);
-            plot->setIntervalLength(plot->dclock_elapsed()/1000.0);
-        }
-        else
-        {
-            qDebug()<<"4 "<<dataArray.size();
-            if(dataArray.size()==0) return;
-
-            if(dataArray.at(0)=='C')
+            if(/*dataArray.size() == 7 || */dataArray.size() == 11)
             {
-                qDebug()<<"5";
-                if(dataArray.at(3) == '3')
-                {
-                   double elapsed = (plot -> dclock_elapsed())/ 1000.0;
-                   QByteArray u;
-                   //u[0]= dataArray.at(5);
-                   int j=5;
-                   /*for(j=5;j<9;j++)
-                   {
-                        if(dataArray.at(j)!='\r') u[j-5]= dataArray.at(j);
-                   }*/
-                   while(dataArray.at(j)!='\r')
-                   {
-                       u[j-5]= dataArray.at(j);
-                       j++;
-                   }
-                   QPointF point(elapsed,u.toDouble()*5/1024);
-                   plot ->appendPoint(point);
-                   RecToFile(point);
-                }
+                UT70_GetData(dataArray);
+                disconnectTimer=0;
             }
 
             dataArray = 0;
-         }
+            return;
+        }
+        dataArray += byte;
     }
 }
 
 
-void MainWindow::RecToFile(QPointF point)
+void MainWindow::refreshScanRate(int value)
 {
-    qDebug() << "RecToFile ...recording";
-    /*
-    QFile f("test.dat");
-    if (f.open(QIODevice::Append | QIODevice::Text))
+    timer->setInterval(value);
+}
+
+
+void MainWindow::UT70_GetData(QByteArray array)
+{   
+    BRange->setEnabled(true);
+    BHold->setEnabled(true);
+    BRel->setEnabled(true);
+    BMax->setEnabled(true);
+    BCap->setEnabled(true);
+    BHz->setEnabled(true);
+
+    float base=1, result=0;
+    QString str="", desc="";
+    uint div = (((uchar)array.at(2))>>3)&7;
+    bool overload = ((uchar)array.at(4))&(1<<3);
+    bool autoMode = !(((uchar)array.at(2))&(1<<6));
+    LAuto->setText(autoMode?"AUTO":"");
+    LHold->setText((((uchar)array.at(4))&(1<<0))?"HOLD":"");
+    BHzActive = (((uchar)array.at(4))&(1<<2))?true:false;
+    BDuty = (((uchar)array.at(2))&7)==5?true:false;
+
+    bool extend5num = ((uchar)array.at(4))&(1<<2);
+    int sign = (((uchar)array.at(4))&(1<<4))?-1:1;
+
+    if(extend5num) result += ((uchar)array.at(5)-0x30)*10000;
+    for(int i=6; i<10; i++)
+        result += ((uchar)array.at(i)-0x30)*pow(10, 9-i);
+
+    if(BHzActive)
     {
-        QTextStream out(&f);
-        out << point.x() << "\t" << point.y() << "\n";
-        f.close();
+        if(div<=1)
+        {
+            base = pow(10, 1+div);
+            desc.append("Hz");
+        }
+        else
+        {
+            base = pow(10, 6-div);
+            desc.append("kHz");
+        }
+        //qDebug() << "Div="<<div;
+    }
+    else if(BDuty)
+    {
+        base = 100;
+        desc.append("%");
     }
     else
-    {
-        qWarning("Can not open file test.dat");
-    }
-    */
-}
+        switch(((uchar)array.at(1)))
+        {
+        case 248: //V~
+            if(!div) base = extend5num?100:10;
+            else     base = pow(10, (4-div+(extend5num?1:0)));
+            desc.append(!div?"mV":"V");
+            break;
+
+        case 240: //V=
+            base = pow(10, 3-div+(extend5num?1:0));
+            desc.append("V");
+            break;
+
+        case 232: //mV
+            base = pow(10, 2-div+(extend5num?1:0));
+            desc.append("mV");
+            break;
+
+        case 168: //A=
+        case 169: //A~
+            base = pow(10, 3-div+(extend5num?1:0));
+            if(BHzActive)
+                desc.append("Hz2");
+            else
+                desc.append("A");
+            break;
+
+        case 176: //mA=
+        case 177: //mA~
+            base = pow(10, 2-div+(extend5num?1:0));
+            if(BHzActive)
+                desc.append("Hz1");
+            else
+                desc.append("mA");
+            break;
+
+        case 224: //R
+            if(!div)        base = 1000;
+            else if(div<=3) base = pow(10, 4-div+(extend5num?1:0));
+            else if(div<=5) base = pow(10, 7-div+(extend5num?1:0));
+            else            base = 100;
+
+            if(!div)             desc.append("Ω");
+            if(div>=1 && div<=3) desc.append("kΩ");
+            if(div>=4 && div<=5) desc.append("MΩ");
+            if(div == 6)         desc.append("nS");
+            break;
+
+        case 225: //C
+            base = pow(10, 3-(div%3)+(extend5num?1:0));
+
+            if(div <= 2) desc.append("nF");
+            else         desc.append("uF");
+            break;
+        }
+
+    str.append(QString::number(result/base, 'f', log10(base)));
+    if(sign == -1) str.insert(0,'-');
+
+    int num = extend5num?6:5;
+    if(sign == -1) num++;
+    if(base == 1) num--;
+
+    if(str.length() < num)
+        while(str.length() != num)
+            str.insert((sign==1)?0:1, '0');
+
+    LCDBig->display(overload ? "" : str);
+    LUnit->setText(overload ? "OV" : desc);
+
+    if(!overload) plot->appendPoint(QPointF(plot->d_clock.elapsed()/1000.0, (qreal)(sign*result/base)));
+//qDebug()<<"PNT: "<<QPointF(plot->d_clock.elapsed()/1000.0, (float)(sign*result/base));
+
+    static QString dt;
+    bool e = (dt == QTime::currentTime().toString())?false:true;
+    QString out = (     (e?"<font color=\"MediumBlue\">":"") +
+                        QTime::currentTime().toString() +
+                        " > " +
+                        (overload ? "" :str) +
+                        (overload ? "OV" : desc) +
+                        (e?"</font>":""));
+
+    textEdit->appendHtml(out);
+
+    //if(record->isChecked()) RecToFile(out);
 
 
-void MainWindow::printTrace(const QByteArray &data)
-{
-    //textEdit->setTextColor((directionRx) ? Qt::darkBlue : Qt::darkGreen);
-    textEdit->insertPlainText(QString(data));
+    dt = QTime::currentTime().toString();
 
     QScrollBar *bar = textEdit->verticalScrollBar();
     bar->setValue(bar->maximum());
+}
+
+
+void MainWindow::RecToFile(/*QPointF point*/QString str)
+{   
+#if 0
+    QFile f("UT70C_Log_.log" /*+ QDateTime::currentDateTime().toString() + ".log"*/);
+    if(f.open(QIODevice::ReadWrite | QIODevice::Text))
+    {
+        QTextStream out(&f);
+        out << str << "\n";
+        f.close();
+    }
+    else
+        qWarning("Can not open file");
+#endif
 }
 
 
@@ -253,39 +300,55 @@ void MainWindow::serialErrorHandler(QSerialPort::SerialPortError error)
     qDebug() << "serial Error: " << serial->errorString();
     if(error == QSerialPort::ResourceError)
     {
-        QMessageBox::critical(this, tr("Critical Error"), serial->errorString());
         openPortButtonClick();
+        QMessageBox::critical(this, tr("Critical Error"), serial->errorString());    
     }
-
-    ui->statusBar->showMessage(tr("Error!"));
 }
 
 
-void MainWindow::serialDataSend()
+
+void MainWindow::serialWriteData()
 {
-    qDebug() << "Data sending...";
-    QByteArray data = textSend->toPlainText().toUtf8();
+    disconnectTimer++;
+    if(disconnectTimer > 1000/SCAN_MS)
+    {
+        LCDBig->display("");
+        LUnit->setText("N.C.");
+        BRange->setEnabled(false);
+        BHold->setEnabled(false);
+        BRel->setEnabled(false);
+        BMax->setEnabled(false);
+        BCap->setEnabled(false);
+        BHz->setEnabled(false);
+        plot->stop();
+    }
+    if(!serial->isOpen()) return;
 
-    if(this->checksendL->isChecked()) data.append('\n');
-    if(this->checksendL->isChecked()) data.append('\0');
+    QByteArray msg;
+    msg[0] = 0x89;
 
-    QString string;
+    serial->write(msg);
+}
 
-    QString alertHtml = "<font color=\"DeepPink\">";
-    QString notifyHtml = "<font color=\"Lime\">";
-    QString infoHtml = "<font color=\"Aqua\">";
-    QString endHtml = "</font><br>";
 
-    string.append(notifyHtml);
-    QString time = QTime::currentTime().toString();
-    string.append(time);
-    string.append(": ");
-    string.append(data);
-    string.append(endHtml);
+void MainWindow::serialWriteCommand()
+{
+    if(!serial->isOpen()) return;
 
-    textEdit->appendHtml(string);
+    QPushButton *clickedButton = qobject_cast<QPushButton *>(sender());
+    QString clickedOperator = clickedButton->text();
 
-    serial->write(data);
+    QByteArray msg;
+    if(clickedOperator == "Range") msg[0] = 0xA1;
+    else if(clickedOperator == "Hold") msg[0] = 0xA5;
+    else if(clickedOperator == "Rel.") msg[0] = 0xA7;
+    else if(clickedOperator == "MaxMin") msg[0] = 0xA9;
+    else if(clickedOperator == "Cap = ~") msg[0] = 0xAD;
+    else if(clickedOperator == "Hz") msg[0] = 0xA3;
+    else return;
+
+    qDebug() << "Send_com: " << msg.toHex();
+    serial->write(msg);
 }
 
 
@@ -296,9 +359,10 @@ void MainWindow::serialDataSend()
 /* Private METHODS section */
 void MainWindow::initMainWidgetCloseState()
 {
-    this->sendButton->setEnabled(false);
+    //this->sendButton->setEnabled(false);
     portBox->setEnabled(true);
     controlButton->setText(QString(tr("Open")));
+    refreshButton->setEnabled(true);
 }
 
 
@@ -306,6 +370,7 @@ void MainWindow::initMainWidgetOpenState()
 {
     portBox->setEnabled(false);
     controlButton->setText(QString(tr("Close")));
+    refreshButton->setEnabled(false);
 }
 
 
@@ -321,6 +386,10 @@ void MainWindow::createActions()
 
      controlButton = new QAction(tr("Open"), this);
      //controlButton->setStatusTip(tr("Open port"));
+     refreshButton = new QAction(tr("Refresh"), this);
+     //record = new QCheckBox("Record to file");
+     refresh = new QSpinBox();//"Scan Time in ms."
+
 }
 
 
@@ -332,41 +401,121 @@ void MainWindow::createMenus()
 }
 
 
+void MainWindow::createToolBars()
+{
+    statusBar = new QStatusBar();
+
+    portBox = new QComboBox(ui->mainToolBar);
+    portBox->setObjectName("Ports");
+    ui->mainToolBar->addAction(refreshButton);
+    ui->mainToolBar->addWidget(portBox);
+    ui->mainToolBar->addAction(controlButton);
+    //ui->mainToolBar->addWidget(record);
+    ui->mainToolBar->addWidget(refresh);
+}
+
+
 void MainWindow::createCentralWidget()
 {
-    plot = new Plot(this);
-    LCDBig = new QLCDNumber(6);
-    LCDBig->setFixedWidth(260);
-    float x = 54.0;
-    LCDBig->display(x);
+    subPlotHLayout = new QHBoxLayout();
 
-    checksendL = new QCheckBox("\\n");
+    plot = new Plot(this);
+    LCDBig = new QLCDNumber(8);
+    //LCDBig->setFixedWidth(260);
+    LCDBig->setFixedHeight(80);
+
+    LUnit = new QLabel();
+    LUnit->setText("N.C.");
+    LUnit->setStyleSheet("font: 24pt;");
+
+    LAuto = new QLabel("Auto");
+    LAuto->setFixedHeight(14);
+    LAuto->setStyleSheet("font: 12pt;");
+    LHold = new QLabel("Hold");
+    LHold->setStyleSheet("font: 12pt;");
+
+#define BTN_WIDTH 55
+    BRange = new QPushButton("Range");
+    BRange->setFixedWidth(BTN_WIDTH/5*4);
+    BHold = new QPushButton("Hold");
+    BHold->setStyleSheet("background-color: red");
+    BHold->setFixedWidth(BTN_WIDTH/5*4);
+    BRel = new QPushButton("Rel.");
+    BRel->setFixedWidth(BTN_WIDTH/3*2);
+    BMax = new QPushButton("MaxMin");
+    BMax->setStyleSheet("background-color: blue");
+    BMax->setFixedWidth(BTN_WIDTH);
+    BCap = new QPushButton("Cap = ~");
+    BCap->setFixedWidth(BTN_WIDTH+5);
+    BCap->setStyleSheet("background-color: yellow");
+    BHz = new QPushButton("Hz");
+    BHz->setStyleSheet("background-color: green");
+    BHz->setFixedWidth(BTN_WIDTH/2);
+
+    /*checksendL = new QCheckBox("\\n");
     checkSendN = new QCheckBox("\\0");
     checksendL->setFixedWidth(30);
-    checkSendN->setFixedWidth(30);
+    checkSendN->setFixedWidth(30);*/
+
+
+    subPlotHLayout = new QHBoxLayout();
+    plotMode[0] = new QRadioButton("All");
+    plotMode[0]->setChecked(true);
+    plotMode[1] = new QRadioButton("Smooth");
+    plotMode[2] = new QRadioButton("Frame");
+    intervalBox = new QSpinBox();
+    intervalBox->setMaximum(120);
+    intervalBox->setMinimum(2);
+    intervalBox->setValue(10);
+    updateOnTime = new QCheckBox("TimeUpdate");
+    updateOnTime->setChecked(true);
+
+    VLayoutRight = new QVBoxLayout();
+    VLayoutRight->addWidget(plot);
+    for(int i=0; i<3; i++)
+        subPlotHLayout->addWidget(plotMode[i]);
+    subPlotHLayout->addWidget(intervalBox);
+    subPlotHLayout->addWidget(updateOnTime);
+
 
     textSend = new QPlainTextEdit;
-    textSend->setFixedHeight(30);
-    textSend->setFixedWidth(200);
+    //textSend->setFixedHeight(30);
+    //textSend->setFixedWidth(200);
 
     textEdit = new QPlainTextEdit;
-    textEdit->setFixedWidth(260);
+    //textEdit->setFixedWidth(260);
 
-    sendButton = new QPushButton("Send");
-    sendButton->setFixedWidth(260);
+    //sendButton = new QPushButton("Send");
+    //sendButton->setFixedWidth(260);
+    //HoldButton = new QPushButton("Hold");
+    //HoldButton->setFixedWidth(260);
 
     HLayout = new QHBoxLayout();
     GridLayoutLeft = new QGridLayout();
 
-    VLayoutRight = new QVBoxLayout();
-    VLayoutRight->addWidget(plot);
 
-    GridLayoutLeft->addWidget(LCDBig, 0,0, 1,3);
-    GridLayoutLeft->addWidget(checksendL, 1,1);
-    GridLayoutLeft->addWidget(checkSendN, 1,2);
-    GridLayoutLeft->addWidget(textSend, 1,0);
-    GridLayoutLeft->addWidget(sendButton, 2,0, 1,3);
-    GridLayoutLeft->addWidget(textEdit, 3,0, 2,3);
+
+    VLayoutRight->addLayout(subPlotHLayout);
+
+    GridLayoutLeft->addWidget(LAuto, 0,0);
+    GridLayoutLeft->addWidget(LHold, 0,1);
+
+    GridLayoutLeft->addWidget(LCDBig, 1,0,1,5);
+    GridLayoutLeft->addWidget(LUnit, 1,5);
+
+    GridLayoutLeft->addWidget(BRange, 2,0);
+    GridLayoutLeft->addWidget(BHold, 2,1);
+    GridLayoutLeft->addWidget(BRel, 2,2);
+    GridLayoutLeft->addWidget(BMax, 2,3);
+    GridLayoutLeft->addWidget(BCap, 2,4);
+    GridLayoutLeft->addWidget(BHz, 2, 5);
+
+    //GridLayoutLeft->addWidget(checksendL, 1,1);
+    //GridLayoutLeft->addWidget(checkSendN, 1,2);
+    //GridLayoutLeft->addWidget(textSend, 1,0);
+    //GridLayoutLeft->addWidget(sendButton, 2,0, 1,3);
+    //GridLayoutLeft->addWidget(HoldButton, 3,0);
+    GridLayoutLeft->addWidget(textEdit, 3,0, 1,6);
 
     HLayout->addLayout(GridLayoutLeft);
     HLayout->addLayout(VLayoutRight);
@@ -374,20 +523,21 @@ void MainWindow::createCentralWidget()
     centralWidget()->setLayout(HLayout);
     setWindowTitle(tr("UART Terminal & Graph"));
 
+    connect(BRange, SIGNAL(clicked()), this, SLOT(serialWriteCommand()));
+    connect(BHold, SIGNAL(clicked()), this, SLOT(serialWriteCommand()));
+    connect(BRel, SIGNAL(clicked()), this, SLOT(serialWriteCommand()));
+    connect(BCap, SIGNAL(clicked()), this, SLOT(serialWriteCommand()));
+    connect(BMax, SIGNAL(clicked()), this, SLOT(serialWriteCommand()));
+    connect(BHz, SIGNAL(clicked()), this, SLOT(serialWriteCommand()));
+
+    connect(plotMode[0], SIGNAL(pressed()), plot, SLOT(setScaleMode()));
+    connect(plotMode[1], SIGNAL(pressed()), plot, SLOT(setScaleMode()));
+    connect(plotMode[2], SIGNAL(pressed()), plot, SLOT(setScaleMode()));
+    connect(intervalBox, SIGNAL(valueChanged(int)), plot, SLOT(intervalChanged(int)));
+    connect(updateOnTime, SIGNAL(clicked(bool)), plot, SLOT(onUpdateOnTime(bool)));
+    //connect(updateOnTime, SIGNAL(clicked(bool)), this, SLOT(onUpdateOnTime(bool)));
+
     this->resize(800,400);
-}
-
-
-void MainWindow::createToolBars()
-{
-    statusBar = new QStatusBar();
-
-    portBox = new QComboBox(ui->mainToolBar);
-    portBox->setObjectName("Ports");
-
-    ui->mainToolBar->addWidget(portBox);
-    ui->mainToolBar->addAction(controlButton);
-
 }
 
 
@@ -396,3 +546,5 @@ void MainWindow::about()
     QMessageBox::about(this, tr("About Application"),
         tr("<b>QSerialDevice and QWT for HabraHabr</b> - example of simple terminal<p> Created by Alex Alexeev. 2011"));
 }
+
+

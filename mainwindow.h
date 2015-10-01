@@ -15,6 +15,10 @@
 #include <QPushButton>
 #include <QCheckBox>
 #include <QLCDNumber>
+#include <QTimer>
+#include <QLabel>
+#include <QRadioButton>
+#include <QSpinBox>
 
 #include <QtSerialPort/QSerialPortInfo>
 #include <QtSerialPort/QSerialPort>
@@ -37,19 +41,19 @@ public:
     explicit MainWindow(QWidget *parent = 0);
     ~MainWindow();
 
-protected:
-    void changeEvent(QEvent *e);
-
 public Q_SLOTS:
-    void procEnumerate(/*const QStringList &l*/);
-    void procSerialMessages(const QString &msg, QDateTime dt);
+    void procEnumerate();
 
     void serialDataReceive();
-    void serialDataSend();
     void serialErrorHandler(QSerialPort::SerialPortError error);
+    void serialWriteData();
+    void serialWriteCommand();
 
-    void printTrace(const QByteArray &data);
-    void RecToFile(QPointF point);
+    void refreshScanRate(int);
+
+    void UT70_GetData(QByteArray array);
+
+    void RecToFile(QString str);
 
     // Toolbar buttons click
     void openPortButtonClick();
@@ -79,19 +83,37 @@ private:
 
     QAction *aboutqtAct;
     QAction *aboutAct;
+    QAction *refreshButton;
     QAction *controlButton;
-    QPushButton *sendButton;
+    QCheckBox *record;
+
+    //QPushButton *sendButton;
+    //QPushButton *HoldButton;
     QComboBox *portBox;
     QStatusBar *statusBar;
     Plot *plot;
+    QHBoxLayout *subPlotHLayout;
 
     QLCDNumber *LCDBig;
+    QLabel *LAuto, *LHold;
+    bool BHzActive, BDuty;
+    QLabel *LUnit;
+    QPushButton *BRange, *BHold, *BRel, *BMax, *BCap, *BHz;
 
     QGridLayout *GridLayoutLeft;
     QVBoxLayout *VLayoutRight;
     QHBoxLayout *HLayout;
 
     QByteArray dataArray;
+
+    int disconnectTimer;
+
+    QRadioButton *plotMode[3];
+    QSpinBox *intervalBox, *refresh;
+    QCheckBox *updateOnTime;
+
+
+    QTimer *timer;
 };
 
 #endif // MAINWINDOW_H

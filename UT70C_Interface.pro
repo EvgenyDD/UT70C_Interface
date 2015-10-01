@@ -13,6 +13,9 @@ TARGET       = UT70C_Interface
 
 include(C:/Qt/QWT/qwt.pri)
 
+    RC_FILE += icon.rc
+    OTHER_FILES += icon.rc
+
 HEADERS += curvedata.h \
     mainwindow.h \
     plot.h
