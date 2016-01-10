@@ -78,6 +78,7 @@ INPUT(
 ./release/curvedata.o
 ./release/plot.o
 ./release/mainwindow.o
+./release/ut70c_interface_plugin_import.o
 ./release/moc_qwt_abstract_slider.o
 ./release/moc_qwt_analog_clock.o
 ./release/moc_qwt_compass.o
